@@ -11,7 +11,7 @@ import math
 # Replace these with your own values from https://my.telegram.org/apps
 API_ID = "25482744"
 API_HASH = "e032d6e5c05a5d0bfe691480541d64f4"
-BOT_TOKEN = "7605597857:AAHEk40jyi466XVMw0I_WZqQg_GyHuM_00Q"
+BOT_TOKEN = "5866712065:AAFsz5teNdXMgza0qc8UV3HAgOxeaL9OONY"
 
 # Initialize the client
 bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
