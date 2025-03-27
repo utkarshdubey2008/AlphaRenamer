@@ -8,22 +8,29 @@ import time
 from datetime import datetime
 import math
 
-# Replace these with your own values from https://my.telegram.org/apps
 API_ID = "25482744"
 API_HASH = "e032d6e5c05a5d0bfe691480541d64f4"
 BOT_TOKEN = "5866712065:AAFsz5teNdXMgza0qc8UV3HAgOxeaL9OONY"
 
-# Initialize the client
-bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+client_config = {
+    'connection_retries': None,
+    'retry_delay': 2,
+    'flood_sleep_threshold': 120,
+    'request_retries': 5,
+    'connection': {
+        'receive_buffer_size': 1024 * 1024 * 8,
+        'send_buffer_size': 1024 * 1024 * 8,
+    }
+}
 
-# Store user states
+bot = TelegramClient('bot_session', API_ID, API_HASH, **client_config).start(bot_token=BOT_TOKEN)
+
 user_states = {}
 
 def get_formatted_time():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 def format_size(size):
-    """Format size in bytes to human readable format"""
     units = ['B', 'KB', 'MB', 'GB', 'TB']
     size_bytes = float(size)
     unit_index = 0
@@ -33,7 +40,6 @@ def format_size(size):
     return f"{size_bytes:.2f} {units[unit_index]}"
 
 def format_time(seconds):
-    """Format seconds into human readable time"""
     if seconds < 60:
         return f"{seconds:.0f}s"
     elif seconds < 3600:
@@ -56,6 +62,8 @@ class UserState:
         self.last_update_time = 0
         self.last_current = 0
         self.speed_history = []
+        self.chunk_size = 1024 * 1024  
+        self.upload_chunk_size = 1024 * 1024
 
 async def progress_callback(current, total, state, message, action="Processing"):
     try:
@@ -67,42 +75,37 @@ async def progress_callback(current, total, state, message, action="Processing")
         
         now = time.time()
         
-        # Update progress every 2 seconds or when completed
-        if now - state.last_update_time < 2 and current != total:
+        if now - state.last_update_time < 0.5 and current != total:
             return
         
-        # Calculate speed
         time_diff = now - state.last_update_time
         if time_diff > 0:
             speed = (current - state.last_current) / time_diff
             state.speed_history.append(speed)
-            # Keep only last 5 speed measurements for average
             if len(state.speed_history) > 5:
                 state.speed_history.pop(0)
+                
+            if speed > 5 * 1024 * 1024:  # If speed > 5MB/s, increase chunk size
+                state.chunk_size = min(state.chunk_size * 2, 8 * 1024 * 1024)
+                state.upload_chunk_size = min(state.upload_chunk_size * 2, 8 * 1024 * 1024)
         
-        # Calculate average speed
         avg_speed = sum(state.speed_history) / len(state.speed_history) if state.speed_history else 0
         
-        # Update last values
         state.last_update_time = now
         state.last_current = current
         
-        # Calculate progress percentage
         percentage = (current / total) * 100 if total else 0
         
-        # Create progress bar
         bar_length = 15
         filled_length = int(percentage / 100 * bar_length)
         bar = '■' * filled_length + '□' * (bar_length - filled_length)
         
-        # Calculate ETA
         if avg_speed > 0:
             eta = (total - current) / avg_speed
             eta_str = format_time(eta)
         else:
             eta_str = "Calculating..."
         
-        # Format current time
         current_time = get_formatted_time()
         
         progress_text = (
@@ -142,19 +145,15 @@ async def handle_file(event: Message):
     sender_id = event.sender_id
     current_time = get_formatted_time()
     
-    # Initialize state for this user
     user_states[sender_id] = UserState()
     state = user_states[sender_id]
     
-    # Store the original message and file information
     state.original_message = event
     state.waiting_for_name = True
     
-    # Get the file extension
     file_name = event.file.name or "file"
     _, extension = os.path.splitext(file_name)
     
-    # Check if it's a video file
     is_video = hasattr(event.file, 'mime_type') and 'video' in event.file.mime_type
     
     buttons = [
@@ -231,11 +230,9 @@ async def handle_text(event: Message):
         new_name = event.text.strip()
         original_file = state.original_message.file
         
-        # Get original extension
         old_name = original_file.name or "file"
         _, extension = os.path.splitext(old_name)
         
-        # Ensure the new name has the extension
         if not new_name.endswith(extension):
             new_name += extension
         
@@ -256,7 +253,6 @@ async def handle_text(event: Message):
 
 async def process_file(event, state: UserState, as_document: bool):
     try:
-        # Initialize progress message
         progress_msg = await event.respond(
             f"🕒 Time (UTC): {get_formatted_time()}\n"
             "Preparing to process your file..."
@@ -264,7 +260,6 @@ async def process_file(event, state: UserState, as_document: bool):
         state.progress_message = progress_msg
         state.start_time = None
         
-        # Download the file with progress
         downloaded_file = await state.original_message.download_media(
             file=state.file_path,
             progress_callback=lambda current, total: progress_callback(
@@ -272,25 +267,27 @@ async def process_file(event, state: UserState, as_document: bool):
             )
         )
         
-        # Reset progress for upload
         state.start_time = None
         await progress_msg.edit(
             f"🕒 Time (UTC): {get_formatted_time()}\n"
             "Preparing to upload..."
         )
         
-        # Upload the file with progress
+        await bot.upload_file(
+            downloaded_file,
+            progress_callback=lambda current, total: progress_callback(
+                current, total, state, progress_msg, "Uploading"
+            ),
+            part_size_kb=state.upload_chunk_size // 1024
+        )
+        
         uploaded_file = await bot.send_file(
             event.chat_id,
             downloaded_file,
             force_document=as_document,
-            progress_callback=lambda current, total: progress_callback(
-                current, total, state, progress_msg, "Uploading"
-            ),
             caption=f"✅ File renamed: {state.file_path}\n🕒 Completed at (UTC): {get_formatted_time()}"
         )
         
-        # Clean up
         try:
             os.remove(downloaded_file)
         except:
