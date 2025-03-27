@@ -8,6 +8,8 @@ import asyncio
 import time
 from datetime import datetime
 import math
+import aiohttp
+import aiofiles
 
 API_ID = "25482744"
 API_HASH = "e032d6e5c05a5d0bfe691480541d64f4"
@@ -126,6 +128,18 @@ async def progress_callback(current, total, state, message, action="Processing")
             
     except Exception as e:
         print(f"Progress callback error: {str(e)}")
+
+async def download_media(url, file_path, progress_callback, state):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            total = int(response.headers.get('content-length', 0))
+            state.start_time = time.time()
+            current = 0
+            async with aiofiles.open(file_path, 'wb') as f:
+                async for chunk in response.content.iter_chunked(state.chunk_size):
+                    await f.write(chunk)
+                    current += len(chunk)
+                    await progress_callback(current, total, state, state.progress_message, "Downloading")
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
@@ -261,18 +275,19 @@ async def process_file(event, state: UserState, as_document: bool):
         state.progress_message = progress_msg
         state.start_time = None
         
-        downloaded_file = await state.original_message.download_media(
-            file=state.file_path,
-            progress_callback=lambda current, total: progress_callback(
-                current, total, state, progress_msg, "Downloading"
-            )
-        )
+        file_url = state.original_message.file.url  # Assuming the file URL is available
+        downloaded_file = state.file_path
+        
+        await download_media(file_url, downloaded_file, progress_callback, state)
         
         state.start_time = None
         await progress_msg.edit(
             f"🕒 Time (UTC): {get_formatted_time()}\n"
             "Preparing to upload..."
         )
+
+        async with aiofiles.open(downloaded_file, 'rb') as f:
+            content = await f.read()
         
         uploaded_file = await bot.send_file(
             event.chat_id,
@@ -283,7 +298,7 @@ async def process_file(event, state: UserState, as_document: bool):
             ),
             caption=f"✅ File renamed: {state.file_path}\n🕒 Completed at (UTC): {get_formatted_time()}"
         )
-        
+
         try:
             os.remove(downloaded_file)
         except:
@@ -297,7 +312,7 @@ async def process_file(event, state: UserState, as_document: bool):
             await state.progress_message.edit(error_msg)
         else:
             await event.respond(error_msg)
-        
+
         if state.file_path and os.path.exists(state.file_path):
             try:
                 os.remove(state.file_path)
