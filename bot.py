@@ -1,6 +1,7 @@
 from telethon import TelegramClient, events
 from telethon.tl.types import DocumentAttributeVideo
 from telethon.tl.custom import Message, Button
+from telethon.network import ConnectionTcpFull
 import os
 from typing import Union
 import asyncio
@@ -12,18 +13,18 @@ API_ID = "25482744"
 API_HASH = "e032d6e5c05a5d0bfe691480541d64f4"
 BOT_TOKEN = "5866712065:AAFsz5teNdXMgza0qc8UV3HAgOxeaL9OONY"
 
+# Simplified client config that works with Heroku
 client_config = {
     'connection_retries': None,
     'retry_delay': 2,
     'flood_sleep_threshold': 120,
-    'request_retries': 5,
-    'connection': {
-        'receive_buffer_size': 1024 * 1024 * 8,
-        'send_buffer_size': 1024 * 1024 * 8,
-    }
+    'request_retries': 5
 }
 
-bot = TelegramClient('bot_session', API_ID, API_HASH, **client_config).start(bot_token=BOT_TOKEN)
+# Initialize the client with correct configuration
+bot = TelegramClient('bot_session', API_ID, API_HASH, 
+                    connection=ConnectionTcpFull,
+                    **client_config).start(bot_token=BOT_TOKEN)
 
 user_states = {}
 
@@ -62,7 +63,7 @@ class UserState:
         self.last_update_time = 0
         self.last_current = 0
         self.speed_history = []
-        self.chunk_size = 1024 * 1024  
+        self.chunk_size = 1024 * 1024
         self.upload_chunk_size = 1024 * 1024
 
 async def progress_callback(current, total, state, message, action="Processing"):
@@ -84,8 +85,8 @@ async def progress_callback(current, total, state, message, action="Processing")
             state.speed_history.append(speed)
             if len(state.speed_history) > 5:
                 state.speed_history.pop(0)
-                
-            if speed > 5 * 1024 * 1024:  # If speed > 5MB/s, increase chunk size
+            
+            if speed > 5 * 1024 * 1024:  # If speed > 5MB/s
                 state.chunk_size = min(state.chunk_size * 2, 8 * 1024 * 1024)
                 state.upload_chunk_size = min(state.upload_chunk_size * 2, 8 * 1024 * 1024)
         
@@ -273,18 +274,13 @@ async def process_file(event, state: UserState, as_document: bool):
             "Preparing to upload..."
         )
         
-        await bot.upload_file(
-            downloaded_file,
-            progress_callback=lambda current, total: progress_callback(
-                current, total, state, progress_msg, "Uploading"
-            ),
-            part_size_kb=state.upload_chunk_size // 1024
-        )
-        
         uploaded_file = await bot.send_file(
             event.chat_id,
             downloaded_file,
             force_document=as_document,
+            progress_callback=lambda current, total: progress_callback(
+                current, total, state, progress_msg, "Uploading"
+            ),
             caption=f"✅ File renamed: {state.file_path}\n🕒 Completed at (UTC): {get_formatted_time()}"
         )
         
